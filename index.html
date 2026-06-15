@@ -605,18 +605,35 @@ async function loadDashboard() {
     document.getElementById('stat-assets').textContent = assetCount.toLocaleString();
     document.getElementById('stat-queue').textContent = queueCount;
 
-    const topSkills = [...(skills.skills || [])].sort((a,b) => b.skillpoints_in_skill - a.skillpoints_in_skill).slice(0,10);
+    // Resolve skill names from EVE type API
+    const topSkills = [...(skills.skills || [])].sort((a,b) => b.skillpoints_in_skill - a.skillpoints_in_skill).slice(0,15);
+    const queueSkills = (queue || []).slice(0,10);
+    const allSkillIds = [...new Set([...topSkills.map(s=>s.skill_id), ...queueSkills.map(q=>q.skill_id)])];
+
+    let skillNames = {};
+    try {
+      const nameRes = await fetch('https://esi.evetech.net/latest/universe/names/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(allSkillIds)
+      });
+      const nameData = await nameRes.json();
+      nameData.forEach(n => { skillNames[n.id] = n.name; });
+    } catch(e) { console.warn('Could not resolve skill names', e); }
+
+    charData.skillNames = skillNames;
+
     document.getElementById('skills-list').innerHTML = topSkills.map(s => `
       <div class="skill-row">
-        <span class="skill-name">Skill #${s.skill_id}</span>
+        <span class="skill-name">${skillNames[s.skill_id] || 'Skill #'+s.skill_id}</span>
         ${pips(s.trained_skill_level)}
         <span class="skill-sp">${formatSP(s.skillpoints_in_skill)} SP</span>
       </div>`).join('') || '<div class="empty">NO SKILLS FOUND</div>';
 
-    document.getElementById('queue-list').innerHTML = (queue || []).slice(0,10).map((q,i) => `
+    document.getElementById('queue-list').innerHTML = queueSkills.map((q,i) => `
       <div class="queue-row">
         <span class="queue-num">${String(i+1).padStart(2,'0')}</span>
-        <span class="queue-name">Skill #${q.skill_id}</span>
+        <span class="queue-name">${skillNames[q.skill_id] || 'Skill #'+q.skill_id}</span>
         <span class="queue-badge">LVL ${q.finished_level}</span>
       </div>`).join('') || '<div class="empty">QUEUE EMPTY</div>';
 
@@ -641,10 +658,12 @@ function generateReport() {
   const assetCount = Array.isArray(charData.assets) ? charData.assets.length : 0;
   const queue = charData.queue || [];
 
+  const allSkills = [...(skills.skills || [])].sort((a,b) => b.skillpoints_in_skill - a.skillpoints_in_skill)
+    .map(s => `  ${(skillNames[s.skill_id] || 'Skill '+s.skill_id).padEnd(35)} L${s.trained_skill_level} | ${s.skillpoints_in_skill.toLocaleString()} SP`).join('\n');
   const topSkills = [...(skills.skills || [])].sort((a,b) => b.skillpoints_in_skill - a.skillpoints_in_skill).slice(0,15)
-    .map(s => `  Skill ${s.skill_id}: Level ${s.trained_skill_level} | ${s.skillpoints_in_skill.toLocaleString()} SP`).join('\n');
+    .map(s => `  ${(skillNames[s.skill_id] || 'Skill '+s.skill_id).padEnd(30)} Level ${s.trained_skill_level} | ${s.skillpoints_in_skill.toLocaleString()} SP`).join('\n');
 
-  const queueList = queue.slice(0,10).map((q,i) => `  ${i+1}. Skill ${q.skill_id} → Level ${q.finished_level}`).join('\n');
+  const queueList = (charData.queue||[]).slice(0,10).map((q,i) => `  ${i+1}. ${(skillNames[q.skill_id] || 'Skill '+q.skill_id).padEnd(30)} → Level ${q.finished_level}`).join('\n');
 
   const report = `═══════════════════════════════════════════════
 AURA NEURAL SYNC — FULL CHARACTER REPORT
@@ -662,6 +681,9 @@ Queue Length:   ${queue.length}
 
 ─── TOP 15 SKILLS BY SP ────────────────────
 ${topSkills || '  No skills found'}
+
+─── ALL ${skillCount} TRAINED SKILLS ───────────────────
+${allSkills || '  No skills found'}
 
 ─── SKILL QUEUE (NEXT 10) ──────────────────
 ${queueList || '  Queue is empty'}
