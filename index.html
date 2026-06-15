@@ -427,6 +427,26 @@
         <div class="stat-value" id="stat-queue">—</div>
         <div class="stat-sub">SKILLS IN TRAINING</div>
       </div>
+      <div class="stat-card">
+        <div class="stat-label">// INDUSTRY JOBS</div>
+        <div class="stat-value" id="stat-jobs">—</div>
+        <div class="stat-sub">ACTIVE JOBS</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">// MARKET ORDERS</div>
+        <div class="stat-value amber" id="stat-orders">—</div>
+        <div class="stat-sub">ACTIVE ORDERS</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">// MINING (30 DAYS)</div>
+        <div class="stat-value green" id="stat-mining">—</div>
+        <div class="stat-sub">ORE TYPES MINED</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">// CURRENT SHIP</div>
+        <div class="stat-value" id="stat-ship" style="font-size:1.1rem">—</div>
+        <div class="stat-sub" id="stat-location">LOCATION: —</div>
+      </div>
     </div>
 
     <div class="panel-grid">
@@ -572,12 +592,17 @@ async function loadDashboard() {
     document.getElementById('char-name').textContent = charData.name;
     document.getElementById('char-portrait').src = `https://images.evetech.net/characters/${charId}/portrait?size=128`;
 
-    const [charInfo, skills, wallet, assets, queue] = await Promise.all([
+    const [charInfo, skills, wallet, assets, queue, location, shipType, miningLedger, industryJobs, marketOrders] = await Promise.all([
       fetch(`https://esi.evetech.net/latest/characters/${charId}/`).then(r=>r.json()),
       esiGet(`https://esi.evetech.net/latest/characters/${charId}/skills/`),
       esiGet(`https://esi.evetech.net/latest/characters/${charId}/wallet/`),
       esiGet(`https://esi.evetech.net/latest/characters/${charId}/assets/`),
-      esiGet(`https://esi.evetech.net/latest/characters/${charId}/skillqueue/`)
+      esiGet(`https://esi.evetech.net/latest/characters/${charId}/skillqueue/`),
+      esiGet(`https://esi.evetech.net/latest/characters/${charId}/location/`).catch(()=>null),
+      esiGet(`https://esi.evetech.net/latest/characters/${charId}/ship/`).catch(()=>null),
+      esiGet(`https://esi.evetech.net/latest/characters/${charId}/mining/`).catch(()=>null),
+      esiGet(`https://esi.evetech.net/latest/characters/${charId}/industry/jobs/`).catch(()=>null),
+      esiGet(`https://esi.evetech.net/latest/characters/${charId}/orders/`).catch(()=>null),
     ]);
 
     charData.info = charInfo;
@@ -585,13 +610,40 @@ async function loadDashboard() {
     charData.wallet = wallet;
     charData.assets = assets;
     charData.queue = queue;
+    charData.location = location;
+    charData.shipType = shipType;
+    charData.miningLedger = miningLedger;
+    charData.industryJobs = industryJobs;
+    charData.marketOrders = marketOrders;
 
     const corpRes = await fetch(`https://esi.evetech.net/latest/corporations/${charInfo.corporation_id}/`);
     const corpData = await corpRes.json();
     charData.corp = corpData;
 
+    // Resolve ship name
+    let shipName = 'Unknown';
+    if (shipType && shipType.ship_type_id) {
+      try {
+        const shipRes = await fetch(`https://esi.evetech.net/latest/universe/types/${shipType.ship_type_id}/`);
+        const shipInfo = await shipRes.json();
+        shipName = shipInfo.name || 'Unknown';
+        charData.shipName = shipName;
+      } catch(e) {}
+    }
+
+    // Resolve current location name
+    let locationName = 'Unknown';
+    if (location && location.solar_system_id) {
+      try {
+        const locRes = await fetch(`https://esi.evetech.net/latest/universe/systems/${location.solar_system_id}/`);
+        const locInfo = await locRes.json();
+        locationName = locInfo.name || 'Unknown';
+        charData.locationName = locationName;
+      } catch(e) {}
+    }
+
     document.getElementById('char-corp').textContent = 'CORPORATION: ' + (corpData.name || charInfo.corporation_id);
-    document.getElementById('char-sec').textContent = 'SECURITY STATUS: ' + (charInfo.security_status ? charInfo.security_status.toFixed(2) : '0.00');
+    document.getElementById('char-sec').textContent = `SEC: ${charInfo.security_status ? charInfo.security_status.toFixed(2) : '0.00'} | LOCATION: ${locationName} | SHIP: ${shipName}`;
 
     const totalSP = skills.total_sp || 0;
     const skillCount = skills.skills ? skills.skills.length : 0;
@@ -604,6 +656,11 @@ async function loadDashboard() {
     document.getElementById('stat-isk').textContent = formatISK(isk) + ' ISK';
     document.getElementById('stat-assets').textContent = assetCount.toLocaleString();
     document.getElementById('stat-queue').textContent = queueCount;
+    document.getElementById('stat-jobs').textContent = Array.isArray(industryJobs) ? industryJobs.filter(j=>j.status==='active').length : '—';
+    document.getElementById('stat-orders').textContent = Array.isArray(marketOrders) ? marketOrders.length : '—';
+    document.getElementById('stat-mining').textContent = Array.isArray(miningLedger) ? miningLedger.length : '—';
+    document.getElementById('stat-ship').textContent = shipName;
+    document.getElementById('stat-location').textContent = 'LOCATION: ' + locationName;
 
     // Resolve skill names from EVE type API
     const topSkills = [...(skills.skills || [])].sort((a,b) => b.skillpoints_in_skill - a.skillpoints_in_skill).slice(0,15);
@@ -651,6 +708,7 @@ async function loadDashboard() {
 
 function generateReport() {
   if(!charData.name) return;
+  const skillNames = charData.skillNames || {};
   const skills = charData.skills || {};
   const totalSP = skills.total_sp || 0;
   const skillCount = skills.skills ? skills.skills.length : 0;
@@ -658,53 +716,80 @@ function generateReport() {
   const assetCount = Array.isArray(charData.assets) ? charData.assets.length : 0;
   const queue = charData.queue || [];
 
+  // All skills with real names
   const allSkills = [...(skills.skills || [])].sort((a,b) => b.skillpoints_in_skill - a.skillpoints_in_skill)
     .map(s => `  ${(skillNames[s.skill_id] || 'Skill '+s.skill_id).padEnd(35)} L${s.trained_skill_level} | ${s.skillpoints_in_skill.toLocaleString()} SP`).join('\n');
-  const topSkills = [...(skills.skills || [])].sort((a,b) => b.skillpoints_in_skill - a.skillpoints_in_skill).slice(0,15)
-    .map(s => `  ${(skillNames[s.skill_id] || 'Skill '+s.skill_id).padEnd(30)} Level ${s.trained_skill_level} | ${s.skillpoints_in_skill.toLocaleString()} SP`).join('\n');
 
-  const queueList = (charData.queue||[]).slice(0,10).map((q,i) => `  ${i+1}. ${(skillNames[q.skill_id] || 'Skill '+q.skill_id).padEnd(30)} → Level ${q.finished_level}`).join('\n');
+  // Full queue with real names
+  const queueList = queue.map((q,i) => `  ${String(i+1).padStart(2,'0')}. ${(skillNames[q.skill_id] || 'Skill '+q.skill_id).padEnd(35)} → Level ${q.finished_level}`).join('\n');
 
-  const report = `═══════════════════════════════════════════════
-AURA NEURAL SYNC — FULL CHARACTER REPORT
+  // Mining ledger
+  const miningLedger = charData.miningLedger || [];
+  const miningReport = miningLedger.length > 0
+    ? miningLedger.map(m => `  ${m.date} | Type ID: ${m.type_id} | Qty: ${m.quantity.toLocaleString()} | System: ${m.solar_system_id}`).join('\n')
+    : '  No recent mining activity recorded';
+
+  // Industry jobs
+  const industryJobs = charData.industryJobs || [];
+  const activeJobs = industryJobs.filter(j=>j.status==='active');
+  const jobsReport = activeJobs.length > 0
+    ? activeJobs.map(j => `  Job ${j.job_id} | Blueprint: ${j.blueprint_type_id} | Runs: ${j.runs} | Ends: ${j.end_date}`).join('\n')
+    : '  No active industry jobs';
+
+  // Market orders
+  const marketOrders = charData.marketOrders || [];
+  const ordersReport = marketOrders.length > 0
+    ? marketOrders.map(o => `  ${o.is_buy_order?'BUY ':'SELL'} | Type: ${o.type_id} | ${o.volume_remain}/${o.volume_total} units @ ${o.price.toLocaleString()} ISK`).join('\n')
+    : '  No active market orders';
+
+  const report = `═══════════════════════════════════════════════════
+AURA NEURAL SYNC — COMPLETE CHARACTER REPORT
 Generated: ${new Date().toUTCString()}
-═══════════════════════════════════════════════
-CAPSULEER:      ${charData.name}
-CHARACTER ID:   ${charData.id}
-CORPORATION:    ${charData.corp?.name || 'Unknown'}
-SEC STATUS:     ${charData.info?.security_status?.toFixed(2) || '0.00'}
+═══════════════════════════════════════════════════
+CAPSULEER:       ${charData.name}
+CHARACTER ID:    ${charData.id}
+CORPORATION:     ${charData.corp?.name || 'Unknown'}
+SEC STATUS:      ${charData.info?.security_status?.toFixed(2) || '0.00'}
+CURRENT SHIP:    ${charData.shipName || 'Unknown'}
+CURRENT SYSTEM:  ${charData.locationName || 'Unknown'}
 
-─── SKILL OVERVIEW ─────────────────────────
-Total SP:       ${totalSP.toLocaleString()}
-Skills Trained: ${skillCount}
-Queue Length:   ${queue.length}
+─── SKILL OVERVIEW ──────────────────────────────
+Total SP:        ${totalSP.toLocaleString()}
+Skills Trained:  ${skillCount}
+Queue Length:    ${queue.length}
 
-─── TOP 15 SKILLS BY SP ────────────────────
-${topSkills || '  No skills found'}
-
-─── ALL ${skillCount} TRAINED SKILLS ───────────────────
+─── ALL ${String(skillCount).padEnd(3)} TRAINED SKILLS (BY SP) ──────────────
 ${allSkills || '  No skills found'}
 
-─── SKILL QUEUE (NEXT 10) ──────────────────
-${queueList || '  Queue is empty'}
+─── FULL SKILL QUEUE (${queue.length} skills) ────────────────
+${queueList || '  Queue is empty — NOT TRAINING!'}
 
-─── FINANCIAL ──────────────────────────────
-ISK Balance:    ${isk.toLocaleString(undefined,{maximumFractionDigits:2})} ISK
+─── FINANCIAL ───────────────────────────────────
+ISK Balance:     ${isk.toLocaleString(undefined,{maximumFractionDigits:2})} ISK
 
-─── ASSETS ─────────────────────────────────
-Total Items:    ${assetCount.toLocaleString()}
+─── ASSETS ──────────────────────────────────────
+Total Items:     ${assetCount.toLocaleString()}
 
-═══════════════════════════════════════════════
-AURA: Analyze my character data above.
-Guide me on what to focus on in New Eden.
-What skills should I prioritize? How do I make
-more ISK? What ships should I aim for next?
-═══════════════════════════════════════════════`;
+─── MINING LEDGER (LAST 30 DAYS) ────────────────
+${miningReport}
+
+─── ACTIVE INDUSTRY JOBS ────────────────────────
+${jobsReport}
+
+─── ACTIVE MARKET ORDERS ────────────────────────
+${ordersReport}
+
+═══════════════════════════════════════════════════
+AURA: This is my complete character data.
+Please analyze everything — skills, queue, mining,
+industry, market activity — and guide me on what
+to focus on next in New Eden.
+═══════════════════════════════════════════════════`;
 
   document.getElementById('report-output').style.display = 'block';
   document.getElementById('report-output').textContent = report;
   document.getElementById('copy-btn').style.display = 'inline-block';
-  setStatus('// REPORT READY — COPY AND PASTE INTO CLAUDE', 'ok');
+  setStatus('// FULL REPORT READY — COPY AND PASTE INTO CLAUDE', 'ok');
 }
 
 function copyReport() {
